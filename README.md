@@ -7,7 +7,7 @@ It handles metadata only. It doesn't download audio, request playback licenses o
 ## Install
 
 1. Install [Violentmonkey](https://violentmonkey.github.io) or [Tampermonkey](https://www.tampermonkey.net).
-2. Create a new script in the extension and paste in the contents of `ame-amazon-music.user.js`.
+2. Open [`ame-amazon-music.user.js`](https://github.com/z0owater/ame-amazon-music/raw/main/ame-amazon-music.user.js) and accept the install prompt. If no prompt appears, create a new script in the extension and paste in the file's contents.
 3. Open an album page. The toolbar appears under the play buttons.
 
 ## Features
@@ -59,12 +59,14 @@ The unit tests cover parsing, disc numbering, seeding, store checks, LRC output 
 
 ## Status
 
-Tested on the live site in Chromium, with the script injected into the page rather than installed through a userscript manager. Downloads, clipboard writes, new tabs and the MusicBrainz form were intercepted during testing, so those last steps haven't run for real.
+The repo owner has installed it through a userscript manager and reports that it works.
+
+The details below come from separate tests on the live site in Chromium, with the script injected into the page. Downloads, clipboard writes, new tabs and the MusicBrainz form were intercepted during those tests, so those last steps didn't run for real.
 
 - **Signed out, in the Indian store, on the current build:** every button. Format check and lyrics correctly refuse and send nothing.
 - **Signed in, on an Unlimited HD account in the Japanese store:** album table, format check, store check, lyrics, covers, seeding fields and in-app navigation. These ran on builds just before the current one, whose only later change is a shorter format label on track rows.
 - **Store check:** "Not listed" was cross-checked on one real album, which India's store does send to its home page.
-- **Not tested:** Firefox, a userscript manager install, plans below Unlimited HD, a real album with only some tracks in a store, and upsell removal on the signed-in page.
+- **Not tested:** Firefox, plans below Unlimited HD, a real album with only some tracks in a store, and upsell removal on the signed-in page.
 
 ## License
 
