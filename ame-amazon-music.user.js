@@ -1,10 +1,13 @@
 // ==UserScript==
 // @name         Ame (Amazon Music)
 // @namespace    ame-amazonmusic
-// @version      0.2.0
+// @version      0.2.1
 // @description  Album info with ISRCs, store availability, format checks, lyrics export, full-size covers, and MH Covers and MusicBrainz links for the Amazon Music web player.
 // @license      GPL-3.0-or-later
-// @homepageURL  https://gitlab.com/SuperSaltyGamer/ame
+// @homepageURL  https://github.com/z0owater/ame-amazon-music
+// @supportURL   https://github.com/z0owater/ame-amazon-music/issues
+// @downloadURL  https://github.com/z0owater/ame-amazon-music/raw/main/ame-amazon-music.user.js
+// @updateURL    https://github.com/z0owater/ame-amazon-music/raw/main/ame-amazon-music.user.js
 // @run-at       document-end
 // @grant        none
 // @inject-into  page
@@ -22,12 +25,11 @@
 // @match        https://music.amazon.com.au/*
 // ==/UserScript==
 
-// An Amazon Music counterpart to Ame by SuperSaltyGamer (GPL-3.0): https://gitlab.com/SuperSaltyGamer/ame
-// The feature set and the zip writer are derived from it.
+// Based on Ame by SuperSaltyGamer (GPL-3.0): https://gitlab.com/SuperSaltyGamer/ame
+// The feature set and the zip writer come from it.
 //
-// Requests only go to Amazon, and only when you press a button. They use the web player's own APIs and the
-// session values the page already holds. Manifests are read for their format attributes and then discarded:
-// this script doesn't fetch audio, request licenses or touch DRM.
+// Requests go to Amazon only when you press a button, through the web player's own APIs and the session values the
+// page already holds. Manifests are read for their format attributes and then dropped. No audio, licenses or DRM.
 
 (function () {
 	"use strict";
@@ -180,7 +182,7 @@
 				const ld = JSON.parse(script);
 				if (ld["@type"] === "MusicAlbum" && asinFromUrl(ld["@id"] || ld.url) === asin) return ld;
 			} catch {
-				// Not every LD+JSON block is ours to read.
+				// Skip blocks that aren't valid JSON.
 			}
 		}
 		return null;

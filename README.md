@@ -1,73 +1,71 @@
 # Ame (Amazon Music)
 
-A userscript for the Amazon Music web player, modelled on the Apple Music edition of [Ame](https://gitlab.com/SuperSaltyGamer/ame) by SuperSaltyGamer. It works on `music.amazon.com`, `music.amazon.co.jp` and the 10 other regional stores.
+A userscript for the Amazon Music web player, based on the Apple Music edition of [Ame](https://gitlab.com/SuperSaltyGamer/ame) by SuperSaltyGamer. It runs on all 12 regional Amazon Music sites, such as `music.amazon.com` and `music.amazon.co.jp`.
 
-It handles metadata only. It doesn't download audio, request playback licenses or touch DRM.
+It only reads metadata. It doesn't download audio, request playback licenses or touch DRM.
 
 ## Install
 
-1. Install [Violentmonkey](https://violentmonkey.github.io) or [Tampermonkey](https://www.tampermonkey.net).
-2. Open [`ame-amazon-music.user.js`](https://github.com/z0owater/ame-amazon-music/raw/main/ame-amazon-music.user.js) and accept the install prompt. If no prompt appears, create a new script in the extension and paste in the file's contents.
-3. Open an album page. The toolbar appears under the play buttons.
+1. Install [Tampermonkey](https://www.tampermonkey.net) or [Violentmonkey](https://violentmonkey.github.io).
+2. **In Chrome, Brave, Edge and other Chromium browsers:** open the extensions page (`chrome://extensions` or `brave://extensions`), click **Details** on the userscript manager and turn on **Allow User Scripts**. Without it the manager installs scripts but never runs them. Firefox doesn't need this.
+3. Open [`ame-amazon-music.user.js`](https://github.com/z0owater/ame-amazon-music/raw/main/ame-amazon-music.user.js) and accept the install prompt.
+4. Open an album page. The buttons appear under the play button.
 
 ## Features
 
-| Feature | How to use it | Sign-in needed |
+| Button | What it does | Sign-in needed |
 | --- | --- | --- |
-| **Album info table** | **Info** shows ASIN, disc, track, duration, ISRC, album and track dates, language, explicit flag, genre, composer, artist, label and copyright. Copy it as TSV or download it as JSON. Track dates that differ from the album's are underlined. | No |
-| **Format check** | **Check Formats** lists every format for every track, such as `flac 2ch 24bit 96kHz`. The best stereo and spatial formats appear on each row and in the table, with the full list in the tooltip. | Yes |
-| **Store check** | **Regions**, then **Check All Stores**, counts the tracks each of the 12 stores lists, and links to that store's own edition. | No |
-| **Lyrics** | **Download Lyrics** in the table saves timed `.lrc` files, zipped if there are several. Lyrics are licensed text, so these are for your own use. | Yes |
-| **Full-size cover** | **Full Cover** opens the master image. Right-clicking a cover swaps in the master, so Save Image gets the full size. | No |
-| **Cover search** | **Search Covers** searches for the album on [MH Covers](https://covers.musichoarders.xyz). | No |
-| **MusicBrainz** | **Seed MusicBrainz** opens the release editor with the title, artist, label, date, discs, tracks, lengths, guest credits and streaming link filled in. Release type isn't set, because Amazon labels singles as albums too. Nothing is saved until you submit it there. **ISRC2MB** in the table sends the ISRCs to [MagicISRC](https://magicisrc.kepstin.ca). | No |
-| **Upsell removal** | Hides the upsell ribbon and the upsell parts of the album header. Ribbons with inline links, such as Terms of Use notices, stay visible. | No |
+| **Info** | Opens a table of every track: ASIN, disc, track, duration, ISRC, album and track dates, language, explicit flag, genre, composer, artist, label and copyright. Track dates that differ from the album's are underlined. From the table you can copy it as TSV, download it as JSON, or send the ISRCs to [MagicISRC](https://magicisrc.kepstin.ca) with **ISRC2MB**. | No |
+| **Download Lyrics** (in the Info table) | Saves timed `.lrc` files, zipped when there's more than one. Lyrics are licensed, so keep them for personal use. | Yes |
+| **Check Formats** | Lists every format of every track, such as `flac 2ch 24bit 96kHz`. The best stereo and spatial formats show on each track row and in the table. Hover a row's label for the full list. | Yes |
+| **Regions** | Links to the album in all 12 stores. **Check All Stores** counts the tracks each store lists and links to that store's own edition. EU stores can only be checked from an EU store's site, because EU sites refuse requests from other sites. | No |
+| **Full Cover** | Opens the cover without Amazon's resizing. Right-clicking any cover does the same, so Save Image gets the full size. | No |
+| **Search Covers** | Searches for the album on [MH Covers](https://covers.musichoarders.xyz). | No |
+| **Seed MusicBrainz** | Opens the MusicBrainz release editor with the title, artist, label, date, discs, tracks, lengths, guest credits and streaming link filled in. Release type is left blank because Amazon calls singles albums too. Nothing is saved until you submit it. | No |
 
-## What it sends, and when
+It also hides the upsell ribbon and the upsell parts of the album header. Ribbons with links in them, such as Terms of Use notices, stay.
 
-Nothing runs until you press a button. Requests go only to Amazon, except when you choose to open MH Covers, MusicBrainz or MagicISRC.
+## What it sends
+
+Nothing until you press a button. Requests go only to Amazon. MH Covers, MusicBrainz and MagicISRC open only when you click their buttons.
 
 | Button | Request | Uses your session |
 | --- | --- | --- |
-| Info, Seed MusicBrainz | One metadata lookup per album, reused for the session. | Yes |
-| Check Formats | The player's own manifest request, for up to 10 tracks at a time. Only the format attributes are kept. | Yes |
-| Download Lyrics | The player's own lyrics request, for up to 25 tracks at a time. | Yes |
-| Check All Stores | One metadata lookup per store. | No: sent without cookies or your customer ID |
+| Info, Seed MusicBrainz | One metadata lookup per album, reused until you reload | Yes |
+| Check Formats | The player's own manifest request, 10 tracks at a time. Only the format attributes are kept. | Yes |
+| Download Lyrics | The player's own lyrics request, 25 tracks at a time | Yes |
+| Check All Stores | One metadata lookup per store | No. Sent without cookies or your customer ID. |
 
-Requests are spaced 300ms apart. They use the session values the page already holds, and they run on your account. These are private Amazon APIs that the player, or in the lookup's case an older player, relies on, so they can change or disappear without notice. Heavy automated use could also draw attention to an account, so this script only acts when you ask it to.
+Requests are 300 ms apart. These are private Amazon APIs, so they can change or stop working without notice, and heavy use could get an account noticed.
 
 ## Differences from Ame
 
 | Ame (Apple Music) | Here |
 | --- | --- |
-| UPC column | **Not available.** No response I found contains one. |
-| "Fully available" in a storefront | **"Listed".** The check counts the tracks a store lists, which doesn't prove they play there. Telling those apart needs an account in each country. |
-| Release quality badges | **Not added.** Amazon's signed-in page already shows `ULTRA HD` and `ATMOS` badges. |
-| Copy authorization token | **Left out on purpose.** Apple's is a public developer token. Amazon's session credentials are your own. |
-| Fix for the preview queue when logged out | **Left out.** Signed-out playback on Amazon goes to a sign-in prompt, so there's no queue to fix. |
-| Fix for Ctrl+A in search, selectable metadata | **Not needed.** Both already work on Amazon. |
+| UPC column | Not available. None of Amazon's responses include one. |
+| "Fully available" in a storefront | "Listed". The check counts the tracks a store lists, which doesn't prove they play there. |
+| Release quality badges | Not added. Amazon's signed-in page already shows `ULTRA HD` and `ATMOS`. |
+| Copy authorization token | Left out. Apple's is a public developer token. Amazon's credentials are your own. |
+| Preview queue fix when logged out | Left out. Signed-out playback on Amazon goes to a sign-in prompt. |
+| Ctrl+A in search, selectable metadata | Not needed. Both already work on Amazon. |
 
-Amazon serves signed-in visitors a different page from signed-out ones, so the script handles both.
+## Tested
 
-## Testing
+Checked on 7 November 2026 with version 0.2.1. Amazon serves signed-in and signed-out visitors different pages, so they're listed separately.
+
+- **Firefox 159, Tampermonkey 5.5.0:** installed and in use.
+- **Brave 1.99, Tampermonkey 5.5.1:** the script doesn't run until **Allow User Scripts** is on (Install, step 2).
+- **Signed out, Japanese and UK stores, Chromium 152 with the script injected:** every button. Check Formats and Download Lyrics refuse and send nothing. The store check reaches all 12 stores from the UK store, and the 6 non-EU stores from the Japanese one. Downloads and new tabs were checked by the file or URL they produced, not opened.
+- **Not tested:** signed in, Violentmonkey, an album that some stores don't list, and plans below Unlimited HD.
+
+## Development
 
 ```bash
-node --test test/
+node --test
 ```
 
-The unit tests cover parsing, disc numbering, seeding, store checks, LRC output and the zip writer.
-
-## Status
-
-The repo owner has installed it through a userscript manager and reports that it works.
-
-The details below come from separate tests on the live site in Chromium, with the script injected into the page. Downloads, clipboard writes, new tabs and the MusicBrainz form were intercepted during those tests, so those last steps didn't run for real.
-
-- **Signed out, in the Indian store, on the current build:** every button. Format check and lyrics correctly refuse and send nothing.
-- **Signed in, on an Unlimited HD account in the Japanese store:** album table, format check, store check, lyrics, covers, seeding fields and in-app navigation. These ran on builds just before the current one, whose only later change is a shorter format label on track rows.
-- **Store check:** "Not listed" was cross-checked on one real album, which India's store does send to its home page.
-- **Not tested:** Firefox, plans below Unlimited HD, a real album with only some tracks in a store, and upsell removal on the signed-in page.
+The tests cover parsing, disc numbering, seeding, store checks, LRC output and the zip writer.
 
 ## License
 
-GPL-3.0-or-later, the same family as Ame. See `LICENSE`.
+GPL-3.0-or-later, like Ame. See `LICENSE`.
