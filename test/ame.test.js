@@ -531,6 +531,123 @@ test("a track with only spatial formats isn't reported as unavailable", () => {
 	assert.equal(row.spatial, "ec-3 6ch 48kHz 770kbps 3D");
 });
 
+test("normalizeColumnOrder keeps a saved order, drops unknown columns and adds new ones", () => {
+	const defaults = ame.COLUMNS.map(([ key ]) => key);
+	assert.deepEqual(ame.normalizeColumnOrder(null), defaults);
+	assert.deepEqual(ame.normalizeColumnOrder("garbage"), defaults);
+
+	const order = ame.normalizeColumnOrder([ "title", "gone", "isrc", "title" ]);
+	assert.deepEqual(order.slice(0, 2), [ "title", "isrc" ]);
+	assert.deepEqual([ ...order ].sort(), [ ...defaults ].sort());
+});
+
+test("moveColumn puts the dragged column in the target's place, in either direction", () => {
+	const order = [ "a", "b", "c", "d" ];
+	assert.deepEqual(ame.moveColumn(order, "a", "c"), [ "b", "c", "a", "d" ]);
+	assert.deepEqual(ame.moveColumn(order, "d", "a"), [ "d", "a", "b", "c" ]);
+	assert.deepEqual(ame.moveColumn(order, "a", "d"), [ "b", "c", "d", "a" ]);
+	assert.equal(ame.moveColumn(order, "a", "a"), order);
+	assert.equal(ame.moveColumn(order, "x", "a"), order);
+	assert.deepEqual(order, [ "a", "b", "c", "d" ]);
+});
+
+test("orderedColumns drives the TSV column order", () => {
+	const columns = ame.orderedColumns(ame.moveColumn(ame.normalizeColumnOrder(null), "title", "asin"));
+	assert.deepEqual(columns.slice(0, 2), [ [ "title", "Title" ], [ "asin", "ASIN" ] ]);
+
+	const tsv = ame.toTsv(columns, ame.albumRows(sampleAlbum(), new Map()));
+	assert.match(tsv.split("\n")[0], /^Title\tASIN\t/);
+	assert.match(tsv.split("\n")[1], /^One\tB0CZPF1000\t/);
+});
+
+test("magicIsrcUrl passes a MusicBrainz release when there is one", () => {
+	const url = new URL(ame.magicIsrcUrl(sampleAlbum(), "ffc27b61-d754-4d47-bbc3-62ae6f3be77f"));
+	assert.equal(url.searchParams.get("mbid"), "ffc27b61-d754-4d47-bbc3-62ae6f3be77f");
+	assert.equal(url.searchParams.get("isrc1"), "JPU902400835");
+	assert.equal(new URL(ame.magicIsrcUrl(sampleAlbum())).searchParams.has("mbid"), false);
+});
+
+test("musicBrainzReleaseId takes a release only when the URL links to exactly one", () => {
+	const relation = (id, type = "release") => ({ "target-type": type, [type]: { id } });
+
+	assert.equal(ame.musicBrainzReleaseId({ relations: [ relation("r1") ] }), "r1");
+	assert.equal(ame.musicBrainzReleaseId({ relations: [ relation("r1"), relation("r1") ] }), "r1");
+	assert.equal(ame.musicBrainzReleaseId({ relations: [ relation("r1"), relation("r2") ] }), null);
+	assert.equal(ame.musicBrainzReleaseId({ relations: [ relation("a1", "artist") ] }), null);
+	assert.equal(ame.musicBrainzReleaseId({ relations: [] }), null);
+	assert.equal(ame.musicBrainzReleaseId(null), null);
+
+	const lookup = new URL(ame.musicBrainzUrlLookup("https://music.amazon.co.jp/albums/B0D869DW1G"));
+	assert.equal(lookup.hostname, "musicbrainz.org");
+	assert.equal(lookup.searchParams.get("resource"), "https://music.amazon.co.jp/albums/B0D869DW1G");
+	assert.equal(lookup.searchParams.get("inc"), "release-rels");
+});
+
+test("missingTracks matches by ISRC and gives up without them", () => {
+	const page = [ { isrc: "A", disc: 1, number: 1 }, { isrc: "B", disc: 1, number: 2 } ];
+	assert.deepEqual(ame.missingTracks(page, [ { isrc: "B" }, { isrc: "A" }, { isrc: "BONUS" } ]), []);
+	assert.deepEqual(ame.missingTracks(page, [ { isrc: "A" } ]).map(track => track.number), [ 2 ]);
+	assert.equal(ame.missingTracks(page, [ { isrc: "A" }, { isrc: "" } ]), null);
+	assert.equal(ame.missingTracks([ { isrc: "" } ], [ { isrc: "A" } ]), null);
+	assert.equal(ame.missingTracks([], [ { isrc: "A" } ]), null);
+});
+
+test("classifyStoreLookup names the missing tracks when ISRCs allow it", () => {
+	const store = (...isrcs) => ({ albumList: [ { asin: "B0STORE001", tracks: isrcs.map(isrc => ({ isrc })) } ] });
+	const tracks = sampleAlbum().tracks.map(track => ({ ...track, isrc: track.isrc || "JPXX00000003" }));
+
+	// A different edition with the same tracks in another order, plus a bonus track.
+	assert.deepEqual(ame.classifyStoreLookup(store("JPXX00000003", "JPU902400835", "JPPO01618586", "BONUS"), 3, tracks),
+		{ status: "full", asin: "B0STORE001", available: 3, expected: 3, missing: [] });
+
+	// Same count, but one track is a different recording. Counting alone would call this full.
+	const swapped = ame.classifyStoreLookup(store("JPU902400835", "JPPO01618586", "OTHER"), 3, tracks);
+	assert.equal(swapped.status, "partial");
+	assert.deepEqual(swapped.missing, [ "2-1" ]); // Disc 2, track 1, as this album has two discs.
+	assert.equal(ame.regionStatusText(swapped), "2 of 3 tracks");
+
+	const singleDisc = tracks.slice(0, 2);
+	assert.deepEqual(ame.classifyStoreLookup(store("JPU902400835"), 2, singleDisc).missing, [ "2" ]);
+
+	// Without ISRCs on every track, or with only part of the album known, it falls back to counting.
+	assert.deepEqual(ame.classifyStoreLookup(store("JPU902400835", ""), 3, tracks), { status: "partial", asin: "B0STORE001", available: 2, expected: 3 });
+	assert.deepEqual(ame.classifyStoreLookup(store("A", "B", "C"), 5, tracks), { status: "partial", asin: "B0STORE001", available: 3, expected: 5 });
+});
+
+test("regionLinks carry the missing tracks for the menu's tooltip", () => {
+	const results = new Map([ [ "music.amazon.com", { status: "partial", asin: "B0STORE001", available: 2, expected: 3, missing: [ "2-1" ] } ] ]);
+	const links = new Map(ame.regionLinks("B0CZPF5L2V", "music.amazon.co.jp", results).map(link => [ link.host, link ]));
+	assert.deepEqual(links.get("music.amazon.com").missing, [ "2-1" ]);
+	assert.deepEqual(links.get("music.amazon.de").missing, []);
+});
+
+test("lyricsSyncLabel tells synced, unsynced and missing lyrics apart", () => {
+	assert.equal(ame.lyricsSyncLabel({ lines: [ { startTime: 0, text: "a" }, { startTime: 1200, text: "b" } ] }), "Synced");
+	assert.equal(ame.lyricsSyncLabel({ lines: [ { startTime: 0, text: "a" }, { startTime: 0, text: "b" } ] }), "Unsynced");
+	assert.equal(ame.lyricsSyncLabel({ lines: [] }), "None");
+	assert.equal(ame.lyricsSyncLabel(undefined), "None");
+});
+
+test("lyricsFiles writes an .lrc and keeps the raw response beside it", () => {
+	const response = {
+		lyrics: { lines: [ { startTime: 1390, endTime: 8620, text: "made-up line" } ], writers: [ "Writer" ] },
+		lyricsSource: "made-up source",
+		trackAsinAndMarketplace: { asin: "B0CZPF1000", musicTerritory: "JP" }
+	};
+	const [ lrc, raw ] = ame.lyricsFiles({ disc: 1, number: 3, title: "Song?", artist: "Artist" }, response, "Album");
+
+	assert.equal(lrc.name, "1-03. Song_.lrc");
+	assert.equal(lrc.data, "[ti:Song?]\n[ar:Artist]\n[al:Album]\n[au:Writer]\n[00:01.39]made-up line\n");
+	assert.equal(raw.name, "1-03. Song_.json");
+	assert.deepEqual(JSON.parse(raw.data), response);
+});
+
+test("albumRows shows what a lyrics download found, over the lookup's flag", () => {
+	const album = sampleAlbum();
+	const rows = ame.albumRows(album, new Map(), new Map([ [ "B0CZPF1000", "Synced" ], [ "B0CZPF1002", "None" ] ]));
+	assert.deepEqual(rows.map(row => row.lyrics), [ "Synced", "", "None" ]);
+});
+
 test("createZip lays out a well-formed archive", () => {
 	const zip = ame.createZip([ { name: "1-01. 曲.lrc", data: "made-up" }, { name: "b.lrc", data: "" } ]);
 	const bytes = Buffer.concat(zip.parts.map(part => Buffer.from(part)));

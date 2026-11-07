@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Ame (Amazon Music)
 // @namespace    ame-amazonmusic
-// @version      0.2.1
+// @version      0.3.0
 // @description  Album info with ISRCs, store availability, format checks, lyrics export, full-size covers, and MH Covers and MusicBrainz links for the Amazon Music web player.
 // @license      GPL-3.0-or-later
 // @homepageURL  https://github.com/z0owater/ame-amazon-music
@@ -85,6 +85,8 @@
 	const MANIFEST_BATCH_SIZE = 10;
 	const LYRICS_BATCH_SIZE = 25; // The API rejects anything larger.
 	const REQUEST_DELAY_MS = 300;
+	const MUSICBRAINZ_TIMEOUT_MS = 5000;
+	const COLUMN_DRAG_TYPE = "application/x-ame-column";
 
 	// Parsing and formatting.
 
@@ -245,7 +247,8 @@
 		};
 	}
 
-	function albumRows(album, formats) {
+	// `lyrics` holds what a lyrics download found for each track. Until then the lookup only says whether there are any.
+	function albumRows(album, formats, lyrics = new Map()) {
 		return album.tracks.map(track => {
 			const { best, spatial } = summarizeFormats(formats.get(track.asin));
 			const checked = formats.has(track.asin);
@@ -262,7 +265,7 @@
 				explicit: track.explicit ? "E" : "",
 				format: best ? formatLabel(best) : (checked && !spatial ? "[unavailable]" : ""),
 				spatial: spatial ? formatLabel(spatial) : "",
-				lyrics: track.hasLyrics ? "Yes" : "",
+				lyrics: lyrics.get(track.asin) || (track.hasLyrics ? "Yes" : ""),
 				genre: track.genre || "",
 				composer: (track.composers || []).join(", "),
 				artist: track.artist,
@@ -294,6 +297,29 @@
 		].join("\n");
 	}
 
+	// A saved column order keeps only the columns that still exist, and gets any new ones added at the end.
+	function normalizeColumnOrder(saved) {
+		const keys = COLUMNS.map(([ key ]) => key);
+		const order = [ ...new Set([].concat(saved || []).filter(key => keys.includes(key))) ];
+		return [ ...order, ...keys.filter(key => !order.includes(key)) ];
+	}
+
+	// The dragged column takes the place of the one it's dropped on, so it can reach either end.
+	function moveColumn(order, key, targetKey) {
+		const from = order.indexOf(key);
+		const to = order.indexOf(targetKey);
+		if (from < 0 || to < 0 || from === to) return order;
+
+		const moved = [ ...order ];
+		moved.splice(from, 1);
+		moved.splice(to, 0, key);
+		return moved;
+	}
+
+	function orderedColumns(order) {
+		return order.map(key => COLUMNS.find(([ columnKey ]) => columnKey === key));
+	}
+
 	// Links out.
 
 	function coverSearchUrl(album) {
@@ -303,12 +329,26 @@
 		return `https://covers.musichoarders.xyz?${params}`;
 	}
 
-	function magicIsrcUrl(album) {
+	// With a release ID, MagicISRC opens that release instead of asking you to pick one.
+	function magicIsrcUrl(album, mbid = null) {
 		const params = new URLSearchParams();
+		if (mbid) params.set("mbid", mbid);
 		album.tracks.forEach((track, index) => {
 			if (track.isrc) params.set(`isrc${index + 1}`, track.isrc);
 		});
 		return `https://magicisrc.kepstin.ca/?${params}`;
+	}
+
+	function musicBrainzUrlLookup(albumUrl) {
+		return `https://musicbrainz.org/ws/2/url?fmt=json&inc=release-rels&resource=${encodeURIComponent(albumUrl)}`;
+	}
+
+	// The release a MusicBrainz URL entity links to, if it links to exactly one.
+	function musicBrainzReleaseId(body) {
+		const ids = new Set((body?.relations || [])
+			.filter(relation => relation["target-type"] === "release" && relation.release?.id)
+			.map(relation => relation.release.id));
+		return ids.size === 1 ? [ ...ids ][0] : null;
 	}
 
 	function guessLanguage(tracks) {
@@ -382,7 +422,8 @@
 				url: `https://${host}/albums/${result?.asin || asin}`,
 				isCurrent: host === currentHost,
 				status: result?.status || "",
-				text: regionStatusText(result)
+				text: regionStatusText(result),
+				missing: result?.missing || []
 			};
 		});
 	}
@@ -407,10 +448,35 @@
 		return `https://${link.host}/${link.apiRegion}/api/muse/legacy/lookup`;
 	}
 
-	// A store lists the album under its own ASIN if it has one, and returns nothing if it doesn't list it at all.
-	function classifyStoreLookup(body, expected) {
+	// The tracks of this page's album that a store's edition lacks, matched by ISRC because titles differ between stores.
+	// Null when either side has a track without an ISRC, since nothing reliable is left to match on.
+	function missingTracks(pageTracks, storeTracks) {
+		if (!pageTracks.length || [ ...pageTracks, ...storeTracks ].some(track => !track.isrc)) return null;
+		const isrcs = new Set(storeTracks.map(track => track.isrc));
+		return pageTracks.filter(track => !isrcs.has(track.isrc));
+	}
+
+	function trackPosition(track, isMultiDisc) {
+		return isMultiDisc ? `${track.disc}-${track.number}` : String(track.number);
+	}
+
+	// A store lists the album under its own ASIN if it has one, and returns nothing if it doesn't list it at all. When
+	// every track of this page's album is known, the store's edition is checked for each of them, not just counted.
+	function classifyStoreLookup(body, expected, pageTracks = []) {
 		const album = body?.albumList?.[0];
 		if (!album) return { status: "missing" };
+
+		const missing = pageTracks.length >= expected ? missingTracks(pageTracks, album.tracks || []) : null;
+		if (missing) {
+			const isMultiDisc = pageTracks.some(track => track.disc > 1);
+			return {
+				status: missing.length ? "partial" : "full",
+				asin: album.asin,
+				available: pageTracks.length - missing.length,
+				expected: pageTracks.length,
+				missing: missing.map(track => trackPosition(track, isMultiDisc))
+			};
+		}
 
 		const available = (album.tracks || []).length;
 		return { status: available >= expected ? "full" : "partial", asin: album.asin, available, expected };
@@ -492,9 +558,23 @@
 		return out.join("\n") + "\n";
 	}
 
-	function lyricsFileName(track) {
+	function lyricsFileName(track, extension = ".lrc") {
 		const number = track.number.toString().padStart(2, "0");
-		return sanitizeFileName(`${track.disc}-${number}. ${track.title.slice(0, 120)}`) + ".lrc";
+		return sanitizeFileName(`${track.disc}-${number}. ${track.title.slice(0, 120)}`) + extension;
+	}
+
+	function lyricsSyncLabel(lyrics) {
+		const lines = lyrics?.lines || [];
+		if (!lines.length) return "None";
+		return lines.some(line => line.startTime > 0) ? "Synced" : "Unsynced";
+	}
+
+	// An .lrc file, plus the response it came from, which also keeps each line's end time and the lyrics' source.
+	function lyricsFiles(track, response, albumTitle) {
+		return [
+			{ name: lyricsFileName(track), data: lyricsToLrc(response.lyrics, { title: track.title, artist: track.artist, album: albumTitle }) },
+			{ name: lyricsFileName(track, ".json"), data: JSON.stringify(response, null, "\t") + "\n" }
+		];
 	}
 
 	// Formats. Only these attributes are kept from a manifest, using the same fields the player labels its own quality with.
@@ -616,9 +696,11 @@
 
 	const shared = {
 		albumAsinFromPath, asinFromUrl, fullImageUrl, parseIsoDuration, formatDuration, dateFromMs, sanitizeFileName, cleanReleaseTitle, chunk,
-		parseLdAlbum, findLdAlbum, parseLookupAlbum, buildAlbum, albumRows, matchRowsToTracks, toTsv, coverSearchUrl, magicIsrcUrl, guessLanguage, guessScript,
-		buildSeedFields, regionLinks, regionStatusText, storeLookupUrl, classifyStoreLookup, buildLookupRequest, buildManifestRequest,
-		buildLyricsRequest, formatLrcTime, lyricsToLrc, lyricsFileName, compareFormats, formatLabel, summarizeFormats, rowFormatText, parseDashFormats, createZip,
+		parseLdAlbum, findLdAlbum, parseLookupAlbum, buildAlbum, albumRows, matchRowsToTracks, toTsv, normalizeColumnOrder, moveColumn, orderedColumns,
+		coverSearchUrl, magicIsrcUrl, musicBrainzUrlLookup, musicBrainzReleaseId, guessLanguage, guessScript,
+		buildSeedFields, regionLinks, regionStatusText, storeLookupUrl, missingTracks, classifyStoreLookup, buildLookupRequest, buildManifestRequest,
+		buildLyricsRequest, formatLrcTime, lyricsToLrc, lyricsFileName, lyricsSyncLabel, lyricsFiles,
+		compareFormats, formatLabel, summarizeFormats, rowFormatText, parseDashFormats, createZip,
 		COLUMNS, REGIONS
 	};
 
@@ -644,7 +726,9 @@
 		#ame-dock-title { flex: 1 1 200px; min-width: 0; overflow: hidden; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 		#ame-dock-scroll { overflow: auto; }
 		#ame-dock table { width: 100%; border-collapse: collapse; white-space: nowrap; }
-		#ame-dock th { position: sticky; top: 0; padding: 4px 8px; background: #1a1f24; font-weight: 600; text-align: left; }
+		#ame-dock th { position: sticky; top: 0; padding: 4px 8px; background: #1a1f24; cursor: grab; font-weight: 600; text-align: left; }
+		#ame-dock th.ame-drop-target { box-shadow: inset 2px 0 0 #25d1da; }
+		#ame-dock select { max-width: 220px; padding: 5px 8px; background: #1a1f24; border: 1px solid rgba(255, 255, 255, .22); border-radius: 999px; color: #e8eaed; font: inherit; }
 		#ame-dock td { padding: 3px 8px; border-top: 1px solid #23282d; }
 		#ame-dock tbody tr:nth-child(even) td { background: #14181c; }
 		#ame-dock td.ame-differs { text-decoration: underline; }
@@ -668,11 +752,32 @@
 	// The upsell parts of the album header live in its shadow root, out of reach of the page's styles.
 	const HEADER_SHADOW_STYLES = `.upsellBadge, .upsell-container, p.unlimited { display: none !important; }`;
 
+	// Remembered in this browser, like Ame's column order and storefront. Storage can be blocked, so failures are ignored.
+	function readSetting(key) {
+		try {
+			return JSON.parse(localStorage.getItem(`ame-amazon-${key}`));
+		} catch {
+			return null;
+		}
+	}
+
+	function writeSetting(key, value) {
+		try {
+			localStorage.setItem(`ame-amazon-${key}`, JSON.stringify(value));
+		} catch {
+			// Not remembered, which only matters on the next visit.
+		}
+	}
+
 	const state = {
 		asin: null,
 		lookups: new Map(),
 		lookupRequests: new Map(),
+		rawLookups: new Map(),
+		storeLookups: new Map(),
+		storeLookupRequests: new Map(),
 		formats: new Map(),
+		lyrics: new Map(),
 		regions: new Map(),
 		formatJob: null,
 		lyricsJob: null,
@@ -681,6 +786,8 @@
 		version: 0,
 		dock: null,
 		dockVersion: -1,
+		dockStore: readSetting("store"),
+		columns: normalizeColumnOrder(readSetting("columns")),
 		regionsMenu: null
 	};
 
@@ -780,6 +887,7 @@
 			state.lookupRequests.set(asin, postPlayerApi("muse/legacy/lookup", TARGET_LOOKUP, buildLookupRequest(session(), asin))
 				.then(body => {
 					const album = body?.albumList?.[0];
+					state.rawLookups.set(asin, body);
 					state.lookups.set(asin, album ? parseLookupAlbum(album) : null);
 				})
 				.catch(err => {
@@ -791,22 +899,51 @@
 		return state.lookupRequests.get(asin);
 	}
 
-	// Sent without cookies or your customer ID, so it doesn't involve your account.
-	async function fetchRegionStatus(asin, link, expected) {
-		try {
-			const config = session();
-			const url = storeLookupUrl(link, location.origin, config.siteRegion);
-			if (!url) return { status: "unreachable" };
+	function storeKey(asin, territory) {
+		return `${territory}:${asin}`;
+	}
 
-			const response = await fetch(url, {
+	// The album as another store lists it. Sent without cookies or your customer ID, so it doesn't involve your account.
+	// Shared by the store check and the Info table, and reused for the session. A failed request is forgotten so it can be retried.
+	function fetchStoreLookup(asin, link) {
+		const key = storeKey(asin, link.territory);
+
+		if (!state.storeLookupRequests.has(key)) {
+			const config = session();
+			const request = fetch(storeLookupUrl(link, location.origin, config.siteRegion), {
 				method: "POST",
 				credentials: "omit",
 				headers: playerApiHeaders(config, TARGET_LOOKUP),
 				body: JSON.stringify(buildLookupRequest(config, asin, link.territory, ""))
+			}).then(response => {
+				if (!response.ok) throw new Error(`The ${link.name} store responded with ${response.status}.`);
+				return response.json();
 			});
 
-			if (!response.ok) return { status: "error" };
-			return classifyStoreLookup(await response.json(), expected);
+			state.storeLookupRequests.set(key, request);
+			state.storeLookups.delete(key);
+			request.then(
+				body => state.storeLookups.set(key, body),
+				() => {
+					state.storeLookupRequests.delete(key);
+					state.storeLookups.set(key, null);
+				}
+			);
+		}
+
+		return state.storeLookupRequests.get(key);
+	}
+
+	function canReachStore(link) {
+		const config = session();
+		return !!config && !!storeLookupUrl(link, location.origin, config.siteRegion);
+	}
+
+	async function fetchRegionStatus(asin, link, album) {
+		if (!canReachStore(link)) return { status: "unreachable" };
+
+		try {
+			return classifyStoreLookup(await fetchStoreLookup(asin, link), album.trackCount, album.tracks);
 		} catch (err) {
 			console.warn(`[Ame] Store check failed for ${link.host}:`, err);
 			return { status: "error" };
@@ -975,12 +1112,13 @@
 				const responses = new Map((body?.lyricsResponseList || []).map(response => [ response.trackAsinAndMarketplace?.asin, response ]));
 
 				for (const track of batch) {
-					const lyrics = responses.get(track.asin)?.lyrics;
-					if (!lyrics?.lines?.length) continue;
-					files.push({ name: lyricsFileName(track), data: lyricsToLrc(lyrics, { title: track.title, artist: track.artist, album: album.title }) });
+					const response = responses.get(track.asin);
+					state.lyrics.set(track.asin, lyricsSyncLabel(response?.lyrics));
+					if (response?.lyrics?.lines?.length) files.push(...lyricsFiles(track, response, album.title));
 				}
 
 				done += batch.length;
+				bump();
 				await sleep(REQUEST_DELAY_MS);
 			}
 
@@ -988,8 +1126,6 @@
 
 			if (!files.length) {
 				setLyricsLabel("No lyrics found", 2000);
-			} else if (files.length === 1) {
-				saveFile([ files[0].data ], "text/plain;charset=utf-8", files[0].name);
 			} else {
 				const zip = createZip(files);
 				saveFile(zip.parts, zip.type, sanitizeFileName(`Lyrics {${album.asin}}.zip`));
@@ -1026,7 +1162,7 @@
 				target: "_blank",
 				rel: "noopener",
 				className: link.isCurrent ? "ame-current" : "",
-				title: link.url
+				title: link.missing.length ? `Missing ${link.missing.length === 1 ? "track" : "tracks"} ${link.missing.join(", ")}\n${link.url}` : link.url
 			}, [ el("span", { textContent: link.name }), el("span", { textContent: link.text }) ]);
 			linkEl.dataset.status = link.status;
 			return linkEl;
@@ -1044,7 +1180,7 @@
 
 		try {
 			await ensureLookup(asin);
-			const expected = currentAlbum().trackCount;
+			const album = currentAlbum();
 
 			for (const link of regionLinks(asin, location.hostname)) {
 				if (state.asin !== asin) break;
@@ -1052,7 +1188,7 @@
 				results.set(link.host, { status: "checking" });
 				renderRegions();
 
-				const result = await fetchRegionStatus(asin, link, expected);
+				const result = await fetchRegionStatus(asin, link, album);
 				results.set(link.host, result);
 				renderRegions();
 
@@ -1071,7 +1207,7 @@
 		}
 
 		state.regionsMenu = el("div", { id: "ame-regions" }, [
-			el("p", { textContent: "Checking counts the tracks each store lists, which doesn't guarantee they play there. Links then go to that store's own edition." }),
+			el("p", { textContent: "Checking looks for this album's tracks in each store by ISRC. A listed track isn't guaranteed to play there. Links go to that store's own edition. Hover a partial one to see which tracks it lacks." }),
 			actionButton("Check All Stores", checkRegions, "Check every store for this album, without using your account."),
 			el("div", { id: "ame-regions-list" })
 		]);
@@ -1106,41 +1242,199 @@
 		ensureLookup(state.asin);
 	}
 
-	function renderDock() {
-		const album = currentAlbum();
-		const rows = albumRows(album, state.formats);
-		const scrollTop = state.dock?.querySelector("#ame-dock-scroll")?.scrollTop || 0;
-		const isLookupDone = state.lookups.has(album.asin);
+	// The store the Info table shows: the one picked last if this page can reach it, otherwise this page's own.
+	function dockLink() {
+		const links = regionLinks(state.asin, location.hostname);
+		const picked = links.find(link => link.territory === state.dockStore);
+		if (picked && !picked.isCurrent && canReachStore(picked)) return picked;
+		return links.find(link => link.isCurrent) || null;
+	}
+
+	function dockView() {
+		const link = dockLink();
+
+		if (!link || link.isCurrent) {
+			const album = currentAlbum();
+			const isLoading = !state.lookups.has(album.asin);
+			return { link, album, isOwn: true, isLoading, isFailed: !isLoading && !state.lookups.get(album.asin), raw: state.rawLookups.get(album.asin) };
+		}
+
+		const body = state.storeLookups.get(storeKey(state.asin, link.territory));
+		const lookup = body?.albumList?.[0];
+		const album = buildAlbum({
+			asin: lookup?.asin || state.asin,
+			origin: `https://${link.host}`,
+			ld: null,
+			lookup: lookup ? parseLookupAlbum(lookup) : null,
+			header: null,
+			footer: ""
+		});
+
+		return { link, album, isOwn: false, isLoading: body === undefined, isFailed: body === null, isMissing: !!body && !lookup, raw: body };
+	}
+
+	function loadStore(link) {
+		fetchStoreLookup(state.asin, link)
+			.catch(err => console.warn(`[Ame] Lookup failed for ${link.host}:`, err))
+			.finally(bump);
+	}
+
+	// The window opens straight away, while the click still counts as one, and gets its address once MusicBrainz answers.
+	async function openMagicIsrc(album) {
+		const win = open("", "_blank");
+		let mbid = null;
+
+		try {
+			const response = await fetch(musicBrainzUrlLookup(album.url), { signal: AbortSignal.timeout(MUSICBRAINZ_TIMEOUT_MS) });
+			if (response.ok) mbid = musicBrainzReleaseId(await response.json());
+		} catch (err) {
+			console.warn("[Ame] MusicBrainz lookup failed:", err);
+		}
+
+		const url = magicIsrcUrl(album, mbid);
+		if (win) {
+			win.opener = null;
+			win.location.href = url;
+		} else {
+			open(url, "_blank", "noopener");
+		}
+	}
+
+	function headerCell(event) {
+		const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+		return target?.closest("th") || null;
+	}
+
+	// Columns move by dragging their headers, as in Ame. The order is remembered, and a double-click restores the default.
+	function createHeaderRow(columns) {
+		const rowEl = el("tr", {}, columns.map(([ key, name ]) => {
+			const cellEl = el("th", { textContent: name, draggable: true, title: "Drag to move this column. Double-click to restore the default order." });
+			cellEl.dataset.column = key;
+			return cellEl;
+		}));
+
+		const setColumns = order => {
+			state.columns = order;
+			writeSetting("columns", order);
+			renderDock();
+		};
+		const clearMarks = () => rowEl.querySelectorAll(".ame-drop-target").forEach(cellEl => cellEl.classList.remove("ame-drop-target"));
+
+		rowEl.addEventListener("dragstart", event => {
+			const key = headerCell(event)?.dataset.column;
+			if (!key) return;
+			event.dataTransfer.setData(COLUMN_DRAG_TYPE, key);
+			event.dataTransfer.effectAllowed = "move";
+		});
+		rowEl.addEventListener("dragover", event => {
+			if (!Array.from(event.dataTransfer.types).includes(COLUMN_DRAG_TYPE)) return;
+			event.preventDefault();
+			event.dataTransfer.dropEffect = "move";
+			clearMarks();
+			headerCell(event)?.classList.add("ame-drop-target");
+		});
+		rowEl.addEventListener("dragleave", clearMarks);
+		rowEl.addEventListener("dragend", clearMarks);
+		rowEl.addEventListener("drop", event => {
+			const key = event.dataTransfer.getData(COLUMN_DRAG_TYPE);
+			const targetKey = headerCell(event)?.dataset.column;
+			clearMarks();
+			if (!key || !targetKey) return;
+			event.preventDefault();
+			setColumns(moveColumn(state.columns, key, targetKey));
+		});
+		rowEl.addEventListener("dblclick", () => setColumns(normalizeColumnOrder(null)));
+
+		return rowEl;
+	}
+
+	function createStoreSelect(view) {
+		const selectEl = el("select", { title: "Show this album as another store lists it, such as with translated titles." },
+			regionLinks(state.asin, location.hostname).map(link => {
+				const isReachable = link.isCurrent || canReachStore(link);
+				return el("option", {
+					value: link.territory,
+					textContent: link.isCurrent ? `${link.name} (this store)` : isReachable ? link.name : `${link.name} (from EU stores only)`,
+					disabled: !isReachable
+				});
+			}));
+
+		selectEl.value = view.link?.territory || "";
+		selectEl.addEventListener("change", () => {
+			state.dockStore = selectEl.value;
+			writeSetting("store", state.dockStore);
+			const link = dockLink();
+			if (link && !link.isCurrent) loadStore(link);
+			renderDock();
+		});
+
+		return selectEl;
+	}
+
+	function dockTitle(view, rows) {
+		const { album, link } = view;
+		const store = view.isOwn ? "" : ` · ${link.name}`;
+
+		if (!view.isOwn && (view.isLoading || view.isFailed || view.isMissing)) {
+			return `Album Info${store} (${view.isLoading ? "Loading" : view.isFailed ? "Lookup failed" : "Not listed"})`;
+		}
 
 		const discCount = rows.reduce((count, row) => Math.max(count, row.disc), 0);
-		let title = `Album Info: ${album.title || album.asin}`;
+		let title = `Album Info: ${album.title || album.asin}${store}`;
 		if (rows.length) title += ` (${rows.length} track${rows.length === 1 ? "" : "s"}${discCount > 1 ? `, ${discCount} discs` : ""})`;
 		if (rows.length && !album.isComplete) title += ` (Incomplete: ${rows.length}/${album.trackCount})`;
-		if (!isLookupDone) title += " (Loading details)";
-		else if (!state.lookups.get(album.asin)) title += " (Details unavailable)";
+		if (view.isOwn && view.isLoading) title += " (Loading details)";
+		else if (view.isOwn && view.isFailed) title += " (Details unavailable)";
+		return title;
+	}
+
+	function dockEmptyText(view) {
+		if (view.isOwn) return "This album's track data hasn't loaded yet.";
+		if (view.isLoading) return `Loading the ${view.link.name} store's edition.`;
+		if (view.isFailed) return "That lookup failed. Pick the store again to retry.";
+		return "This store doesn't list this album.";
+	}
+
+	function renderDock() {
+		const view = dockView();
+		const { album, link } = view;
+		const pageAlbum = view.isOwn ? album : currentAlbum();
+		const rows = albumRows(album, view.isOwn ? state.formats : new Map(), view.isOwn ? state.lyrics : new Map());
+		const columns = orderedColumns(state.columns);
+		const scrollTop = state.dock?.querySelector("#ame-dock-scroll")?.scrollTop || 0;
+		const title = dockTitle(view, rows);
+
+		if (!view.isOwn && view.isLoading && !state.storeLookupRequests.has(storeKey(state.asin, link.territory))) loadStore(link);
 
 		const copyButton = actionButton("Copy TSV", async () => {
-			flashButton(copyButton, await copyText(toTsv(COLUMNS, rows)) ? "Copied" : "Copy failed");
-		}, "Copy the table as tab-separated text.");
+			flashButton(copyButton, await copyText(toTsv(columns, rows)) ? "Copied" : "Copy failed");
+		}, "Copy the table as tab-separated text, in the column order shown.");
 
-		const isrcButton = actionButton("ISRC2MB", () => {
-			open(magicIsrcUrl(album), "_blank", "noopener");
-		}, "Add these ISRCs to MusicBrainz with MagicISRC.");
+		const isrcButton = actionButton("ISRC2MB", () => openMagicIsrc(album),
+			"Add these ISRCs to MusicBrainz with MagicISRC. If MusicBrainz already links a release to this album's address, MagicISRC opens that release.");
 		isrcButton.disabled = !album.tracks.some(track => track.isrc);
 
-		const lyricsButton = actionButton(state.lyricsLabel || "Download Lyrics", downloadLyrics, "Download this album's lyrics as .lrc files. Requires signing in.");
-		lyricsButton.disabled = !!state.lyricsJob || (isLookupDone && !!state.lookups.get(album.asin) && !album.tracks.some(track => track.hasLyrics));
+		const pageLookup = state.lookups.get(state.asin);
+		const lyricsButton = actionButton(state.lyricsLabel || "Download Lyrics", downloadLyrics,
+			"Download this album's lyrics from this store as a zip of .lrc files, with the raw responses. Requires signing in.");
+		lyricsButton.disabled = !!state.lyricsJob || (state.lookups.has(state.asin) && !!pageLookup && !pageAlbum.tracks.some(track => track.hasLyrics));
 
 		const jsonButton = actionButton("Download JSON", () => {
-			const formats = Object.fromEntries(album.tracks.filter(track => state.formats.has(track.asin)).map(track => [ track.asin, state.formats.get(track.asin) ]));
+			const formats = view.isOwn ? Object.fromEntries(album.tracks.filter(track => state.formats.has(track.asin)).map(track => [ track.asin, state.formats.get(track.asin) ])) : {};
 			saveFile([ JSON.stringify({ ...album, formats }, null, "\t") ], "application/json", `${album.asin}.json`);
-		}, "Download this album's metadata.");
+		}, "Download the album shown, with any formats checked.");
+		jsonButton.disabled = !album.tracks.length;
+
+		const rawButton = actionButton("Download Raw", () => {
+			saveFile([ JSON.stringify(view.raw, null, "\t") ], "application/json", sanitizeFileName(`${album.asin} ${link?.territory || ""} lookup.json`));
+		}, "Download Amazon's lookup response for the album shown, as Ame's RAW button does.");
+		rawButton.disabled = !view.raw;
 
 		const tableEl = el("table", {}, [
-			el("thead", {}, [ el("tr", {}, COLUMNS.map(([ , name ]) => el("th", { textContent: name }))) ]),
-			el("tbody", {}, rows.map(row => el("tr", {}, COLUMNS.map(([ key ]) => {
+			el("thead", {}, [ createHeaderRow(columns) ]),
+			el("tbody", {}, rows.map(row => el("tr", {}, columns.map(([ key ]) => {
 				if (key === "asin" && row.asin) {
-					return el("td", {}, [ el("a", { href: `/tracks/${row.asin}`, target: "_blank", rel: "noopener", textContent: row.asin }) ]);
+					return el("td", {}, [ el("a", { href: `https://${link?.host || location.host}/tracks/${row.asin}`, target: "_blank", rel: "noopener", textContent: row.asin }) ]);
 				}
 
 				const differs = key === "trackDate" && row.trackDate && row.trackDate !== row.albumDate;
@@ -1151,15 +1445,17 @@
 		const dockEl = el("div", { id: "ame-dock" }, [
 			el("div", { id: "ame-dock-head" }, [
 				el("div", { id: "ame-dock-title", textContent: title, title }),
+				createStoreSelect(view),
 				isrcButton,
 				lyricsButton,
 				copyButton,
 				jsonButton,
+				rawButton,
 				actionButton("Close", closeDock)
 			]),
 			rows.length
 				? el("div", { id: "ame-dock-scroll" }, [ tableEl ])
-				: el("div", { id: "ame-dock-empty", textContent: "This album's track data hasn't loaded yet." })
+				: el("div", { id: "ame-dock-empty", textContent: dockEmptyText(view) })
 		]);
 
 		if (state.dock) state.dock.replaceWith(dockEl);
@@ -1253,7 +1549,8 @@
 		annotateRows();
 
 		if (state.dock && state.dockVersion !== state.version) renderDock();
-		else if (state.dock && state.dock.querySelector("#ame-dock-empty") && currentAlbum().tracks.length) renderDock();
+		// Only this store's edition fills in from the page. Another store's arrives with its lookup, which bumps the version.
+		else if (state.dock && state.dock.querySelector("#ame-dock-empty") && dockView().isOwn && currentAlbum().tracks.length) renderDock();
 	}
 
 	let syncTimer = 0;
@@ -1284,7 +1581,7 @@
 	}
 
 	if (window.__ameAmazon) return;
-	window.__ameAmazon = { ...shared, state, currentAlbum, ensureLookup };
+	window.__ameAmazon = { ...shared, state, currentAlbum, ensureLookup, dockView };
 
 	document.head.append(el("style", { id: "ame-styles", textContent: STYLES }));
 
@@ -1300,6 +1597,15 @@
 		const imgEl = document.elementsFromPoint(event.clientX, event.clientY).find(node => node.localName === "img");
 		if (imgEl) upgradeImage(imgEl, imgEl.src);
 	}, { capture: true, passive: true });
+
+	// Escape closes the stores menu first, then the Info table, unless you're typing somewhere.
+	addEventListener("keydown", event => {
+		if (event.key !== "Escape" || event.defaultPrevented) return;
+		if (event.target instanceof Element && event.target.closest("input, textarea, [contenteditable='true']")) return;
+
+		if (state.regionsMenu) closeRegions();
+		else if (state.dock) closeDock();
+	});
 
 	new MutationObserver(scheduleSync).observe(document.documentElement, {
 		childList: true,
