@@ -1,4 +1,4 @@
-// Run with: node --test test/
+// Run with: node --test
 // Album data below is shaped like Amazon's real responses. Lyric text is made up.
 
 const test = require("node:test");
@@ -334,6 +334,21 @@ test("regionLinks point at the regional edition once it's known", () => {
 	assert.equal(links.get("music.amazon.it").text, "Check failed");
 	assert.equal(links.get("music.amazon.in").text, "Checking");
 	assert.equal(links.get("music.amazon.com").text, "");
+	assert.equal(ame.regionStatusText({ status: "unreachable" }), "Check from an EU store");
+});
+
+test("storeLookupUrl keeps same-region stores on the page's site and skips EU from outside it", () => {
+	const links = new Map(ame.regionLinks("B0CZPF5L2V", "music.amazon.co.jp").map(link => [ link.host, link ]));
+	const url = (host, origin, region) => ame.storeLookupUrl(links.get(host), origin, region);
+
+	// From the Japanese store, as checked on the live site.
+	assert.equal(url("music.amazon.com.au", "https://music.amazon.co.jp", "FE"), "https://music.amazon.co.jp/FE/api/muse/legacy/lookup");
+	assert.equal(url("music.amazon.com.br", "https://music.amazon.co.jp", "FE"), "https://music.amazon.com.br/NA/api/muse/legacy/lookup");
+	assert.equal(url("music.amazon.de", "https://music.amazon.co.jp", "FE"), null);
+
+	// From the UK store, every EU store goes through its own site.
+	assert.equal(url("music.amazon.in", "https://music.amazon.co.uk", "EU"), "https://music.amazon.co.uk/EU/api/muse/legacy/lookup");
+	assert.equal(url("music.amazon.com", "https://music.amazon.co.uk", "EU"), "https://music.amazon.com/NA/api/muse/legacy/lookup");
 });
 
 test("classifyStoreLookup tells full, partial and missing apart", () => {

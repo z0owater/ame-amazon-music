@@ -391,9 +391,18 @@
 			case "full": return `${result.available} tracks`;
 			case "partial": return `${result.available} of ${result.expected} tracks`;
 			case "missing": return "Not listed";
+			case "unreachable": return "Check from an EU store";
 			case "error": return "Check failed";
 			default: return "";
 		}
+	}
+
+	// Each site answers lookups for every store in its own region, so those go to the page's own site. NA and FE sites
+	// also answer other sites, but EU sites refuse every cross-site request, so they can only be checked from an EU store.
+	function storeLookupUrl(link, origin, siteRegion) {
+		if (link.apiRegion === siteRegion) return `${origin}/${siteRegion}/api/muse/legacy/lookup`;
+		if (link.apiRegion === "EU") return null;
+		return `https://${link.host}/${link.apiRegion}/api/muse/legacy/lookup`;
 	}
 
 	// A store lists the album under its own ASIN if it has one, and returns nothing if it doesn't list it at all.
@@ -606,7 +615,7 @@
 	const shared = {
 		albumAsinFromPath, asinFromUrl, fullImageUrl, parseIsoDuration, formatDuration, dateFromMs, sanitizeFileName, cleanReleaseTitle, chunk,
 		parseLdAlbum, findLdAlbum, parseLookupAlbum, buildAlbum, albumRows, matchRowsToTracks, toTsv, coverSearchUrl, magicIsrcUrl, guessLanguage, guessScript,
-		buildSeedFields, regionLinks, regionStatusText, classifyStoreLookup, buildLookupRequest, buildManifestRequest,
+		buildSeedFields, regionLinks, regionStatusText, storeLookupUrl, classifyStoreLookup, buildLookupRequest, buildManifestRequest,
 		buildLyricsRequest, formatLrcTime, lyricsToLrc, lyricsFileName, compareFormats, formatLabel, summarizeFormats, rowFormatText, parseDashFormats, createZip,
 		COLUMNS, REGIONS
 	};
@@ -648,7 +657,7 @@
 		#ame-regions a.ame-current { font-weight: 700; }
 		#ame-regions a[data-status="full"] span:last-child { color: #25d1da; }
 		#ame-regions a[data-status="partial"] span:last-child { color: #f5b942; }
-		#ame-regions a[data-status="missing"], #ame-regions a[data-status="error"] { color: #7d8790; }
+		#ame-regions a[data-status="missing"], #ame-regions a[data-status="unreachable"], #ame-regions a[data-status="error"] { color: #7d8790; }
 
 		.ame-format { display: block; margin-top: 2px; color: #9aa4ad; font-size: 11px; line-height: 1.2; white-space: nowrap; }
 		[data-testid="Box,BadgeGroup"] .ame-format { display: inline-block; align-self: center; margin: 0 0 0 8px; }
@@ -780,11 +789,14 @@
 		return state.lookupRequests.get(asin);
 	}
 
-	// Sent to each store's own site, without cookies or your customer ID, so it doesn't involve your account.
+	// Sent without cookies or your customer ID, so it doesn't involve your account.
 	async function fetchRegionStatus(asin, link, expected) {
+		const config = session();
+		const url = storeLookupUrl(link, location.origin, config.siteRegion);
+		if (!url) return { status: "unreachable" };
+
 		try {
-			const config = session();
-			const response = await fetch(`https://${link.host}/${link.apiRegion}/api/muse/legacy/lookup`, {
+			const response = await fetch(url, {
 				method: "POST",
 				credentials: "omit",
 				headers: playerApiHeaders(config, TARGET_LOOKUP),
@@ -1006,18 +1018,17 @@
 		checkButton.disabled = !!state.regionJob;
 		checkButton.textContent = state.regionJob ? `Checking ${done}/${links.length}` : "Check All Stores";
 
-		state.regionsMenu.querySelector("#ame-regions-list").replaceChildren(...links.map(link => el("a", {
-			href: link.url,
-			target: "_blank",
-			rel: "noopener",
-			className: link.isCurrent ? "ame-current" : "",
-			title: link.url
-		}, [ el("span", { textContent: link.name }), el("span", { textContent: link.text }) ])));
-
-		// A separate pass, because dataset can't be set through el().
-		state.regionsMenu.querySelectorAll("#ame-regions-list a").forEach((linkEl, index) => {
-			linkEl.dataset.status = links[index].status;
-		});
+		state.regionsMenu.querySelector("#ame-regions-list").replaceChildren(...links.map(link => {
+			const linkEl = el("a", {
+				href: link.url,
+				target: "_blank",
+				rel: "noopener",
+				className: link.isCurrent ? "ame-current" : "",
+				title: link.url
+			}, [ el("span", { textContent: link.name }), el("span", { textContent: link.text }) ]);
+			linkEl.dataset.status = link.status;
+			return linkEl;
+		}));
 	}
 
 	async function checkRegions() {
@@ -1039,10 +1050,11 @@
 				results.set(link.host, { status: "checking" });
 				renderRegions();
 
-				results.set(link.host, await fetchRegionStatus(asin, link, expected));
+				const result = await fetchRegionStatus(asin, link, expected);
+				results.set(link.host, result);
 				renderRegions();
 
-				await sleep(REQUEST_DELAY_MS);
+				if (result.status !== "unreachable") await sleep(REQUEST_DELAY_MS);
 			}
 		} finally {
 			state.regionJob = null;
