@@ -793,11 +793,11 @@
 
 	// Sent without cookies or your customer ID, so it doesn't involve your account.
 	async function fetchRegionStatus(asin, link, expected) {
-		const config = session();
-		const url = storeLookupUrl(link, location.origin, config.siteRegion);
-		if (!url) return { status: "unreachable" };
-
 		try {
+			const config = session();
+			const url = storeLookupUrl(link, location.origin, config.siteRegion);
+			if (!url) return { status: "unreachable" };
+
 			const response = await fetch(url, {
 				method: "POST",
 				credentials: "omit",
