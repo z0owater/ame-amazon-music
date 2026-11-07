@@ -54,7 +54,7 @@ Requests are 300 ms apart. These are private Amazon APIs, so they can change or 
 Checked on 7 November 2026 with version 0.2.1. Amazon serves signed-in and signed-out visitors different pages, so they're listed separately.
 
 - **Firefox 159, Tampermonkey 5.5.0:** installed and in use.
-- **Brave 1.99, Tampermonkey 5.5.1:** the script doesn't run until **Allow User Scripts** is on (Install, step 2).
+- **Brave 1.99, Tampermonkey 5.5.1:** installed and in use. It only runs once **Allow User Scripts** is on (Install, step 2).
 - **Signed in on an Unlimited HD account, Japanese store, Chromium 152 with the script injected:** every button, on a 16-track album and a single. Check Formats labelled every track row, Download Lyrics saved a zip of 16 timed `.lrc` files, Full Cover and right-click both gave the 1400×1400 cover, and the toolbar followed in-app navigation.
 - **Signed out, Japanese and UK stores, same setup:** every button. Check Formats and Download Lyrics refuse and send nothing.
 - **Store check:** all 12 stores from the UK store, and the 6 non-EU stores from the Japanese one.
